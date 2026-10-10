@@ -206,23 +206,29 @@ def _grid(p: TaskParams) -> tuple[np.ndarray, np.ndarray, np.ndarray, np.ndarray
     return cached
 
 
-def compute_chunk(params: dict, start: int, end: int) -> tuple[int, int, float]:
+def compute_chunk(params: dict, start: int,
+                  end: int) -> tuple[int, int, float, list[float]]:
     """Невзвешенная по h сумма Σ_{i∈[start,end)} wi · Σ_jk wj·wk·f для порции слоёв.
 
-    Возвращает (start, end, сумма). Вызывается в процессе пула, поэтому параметры
+    Возвращает (start, end, сумма, профиль). Профиль — значения
+    P(x_i) = (hy·hz/9)·S_i ≈ ∬ f(x_i, y, z) dy dz для каждого слоя порции
+    (для живого графика). Вызывается в процессе пула, поэтому параметры
     передаются словарём (легко сериализуется).
     """
     p = TaskParams.from_dict(params)
     yy, zz, wyz, w = _grid(p)
     f = FUNCTIONS[p.function]
     total = 0.0
+    profile: list[float] = []
+    yz_scale = p.hy * p.hz / 9.0
     step = chunk_layers(p.n)
     for s, e in split_range(start, end, step):
         x = (p.ax + p.hx * np.arange(s, e))[:, np.newaxis, np.newaxis]
         values = f(x, yy, zz)                                # (e-s, n+1, n+1)
         layer_sums = np.einsum("kij,ij->k", values, wyz)     # S_i для каждого слоя
         total += float(np.dot(w[s:e], layer_sums))
-    return start, end, total
+        profile.extend((layer_sums * yz_scale).tolist())
+    return start, end, total, profile
 
 
 def compute_range(p: TaskParams, start: int, end: int) -> float:
@@ -301,11 +307,16 @@ class ComputePool:
 
     def compute(self, p: TaskParams, start: int, end: int,
                 progress_cb: Callable[[float], None] | None = None,
-                cancel_event: threading.Event | None = None) -> tuple[float, float]:
+                cancel_event: threading.Event | None = None,
+                chunk_cb: Callable[[int, list[float], float], None] | None = None,
+                ) -> tuple[float, float]:
         """Посчитать вклад слоёв [start, end) всеми процессами пула.
 
         Возвращает (частичный интеграл, время расчёта в секундах).
         ``progress_cb`` получает долю выполненного (0..1).
+        ``chunk_cb(start, profile, partial)`` вызывается на каждую готовую порцию
+        (до ``progress_cb``): первый слой порции, профиль ∬f dy dz по её слоям и
+        вклад порции в интеграл — для живого графика.
         """
         if end <= start:
             return 0.0, 0.0
@@ -333,11 +344,13 @@ class ComputePool:
                     self._terminate_locked()
                 raise ComputeCancelled()
             try:
-                s, e, value = it.next(timeout=0.2)
+                s, e, value, profile = it.next(timeout=0.2)
             except mp.TimeoutError:
                 continue
             results[s] = value
             done_layers += e - s
+            if chunk_cb is not None:
+                chunk_cb(s, profile, value * p.scale)
             if progress_cb is not None:
                 progress_cb(done_layers / count)
         elapsed = time.perf_counter() - t0
@@ -351,7 +364,7 @@ class ComputePool:
             self._terminate_locked()
 
 
-def _compute_chunk_star(args: tuple[dict, int, int]) -> tuple[int, int, float]:
+def _compute_chunk_star(args: tuple[dict, int, int]) -> tuple[int, int, float, list[float]]:
     return compute_chunk(*args)
 
 

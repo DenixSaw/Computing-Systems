@@ -111,6 +111,24 @@ class TestComputePool(unittest.TestCase):
         self.assertAlmostEqual(total, integrate_sequential(p), delta=1e-11)
         self.assertAlmostEqual(progress[-1], 1.0)
 
+    def test_chunk_callback_profile(self) -> None:
+        """Порции для живого графика покрывают все слои один раз и дают тот же интеграл."""
+        p = TaskParams("test", 60, *TEST_BOUNDS)
+        chunks: list[tuple[int, list[float], float]] = []
+        partial, _ = self.pool.compute(p, 0, p.n + 1,
+                                       chunk_cb=lambda s, prof, part: chunks.append((s, prof, part)))
+        covered = sorted(i for s, prof, _ in chunks for i in range(s, s + len(prof)))
+        self.assertEqual(covered, list(range(p.n + 1)))
+        self.assertAlmostEqual(math.fsum(part for *_x, part in chunks), partial, delta=1e-12)
+        profile = np.empty(p.n + 1)
+        for s, prof, _ in chunks:
+            profile[s:s + len(prof)] = prof
+        from_profile = p.hx / 3 * float(np.dot(simpson_weights(p.n), profile))
+        self.assertAlmostEqual(from_profile, integrate_sequential(p), delta=1e-12)
+        # P(x) = ∫∫ sin(x)cos(y)e^z dy dz = sin(x)·(sin by − sin ay)·(e^bz − e^az)
+        x = p.ax + p.hx * np.arange(p.n + 1)
+        np.testing.assert_allclose(profile, np.sin(x) * 1.0 * (math.e - 1), atol=1e-6)
+
     def test_cancel(self) -> None:
         p = TaskParams("heavy", 40, 0.0, 2.0, 0.0, 2.0, 0.0, 2.0)
         cancel = threading.Event()

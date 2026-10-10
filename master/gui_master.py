@@ -13,14 +13,15 @@ from PyQt6.QtGui import QCloseEvent, QDesktopServices, QFont
 from PyQt6.QtWidgets import (QAbstractItemView, QComboBox, QDoubleSpinBox, QFileDialog,
                              QFormLayout, QGridLayout, QGroupBox, QHBoxLayout, QHeaderView,
                              QLabel, QLineEdit, QMainWindow, QPlainTextEdit, QProgressBar,
-                             QPushButton, QScrollArea, QSpinBox, QSplitter, QTableWidget,
-                             QTableWidgetItem, QToolButton, QVBoxLayout, QWidget)
+                             QPushButton, QScrollArea, QSpinBox, QSplitter, QTabWidget,
+                             QTableWidget, QTableWidgetItem, QToolButton, QVBoxLayout, QWidget)
 
 from common import config
 from common.discovery import local_ipv4_addresses, primary_ip
 from common.integrator import (ComputePool, TaskParams, exact_test_integral, partition_layers,
                                validate_params)
 from common.qt_utils import CallThread, append_log
+from master.live_plot import LiveProfilePlot
 from master.plots import PlotResult, build_series_plots
 from master.results_store import ResultsStore
 from master.server import MASTER_NODE_ID, Assignment, MasterServer, RunWorker
@@ -224,7 +225,7 @@ class MasterWindow(QMainWindow):
         rf.addRow("Общее время (wall-clock):", self.time_label)
         rf.addRow("Погрешность:", self.error_label)
 
-        summary_box = QGroupBox("Итоги последнего запуска по узлам")
+        summary_box = QWidget()
         sv = QVBoxLayout(summary_box)
         self.summary_label = QLabel("Расчёт ещё не выполнялся")
         self.summary_label.setWordWrap(True)
@@ -247,11 +248,17 @@ class MasterWindow(QMainWindow):
         tv.addWidget(nodes_box, 3)
         tv.addWidget(result_box, 0)
 
+        # Вкладки: живой профиль расчёта и итоги последнего запуска
+        self.live_plot = LiveProfilePlot()
+        self.tabs = QTabWidget()
+        self.tabs.addTab(self.live_plot, "Профиль расчёта (live)")
+        self.tabs.addTab(summary_box, "Итоги последнего запуска по узлам")
+
         right = QSplitter(Qt.Orientation.Vertical)
         right.addWidget(top)
-        right.addWidget(summary_box)
+        right.addWidget(self.tabs)
         right.addWidget(log_box)
-        right.setSizes([420, 230, 250])
+        right.setSizes([330, 380, 190])
 
         main = QSplitter(Qt.Orientation.Horizontal)
         main.addWidget(scroll)
@@ -501,7 +508,10 @@ class MasterWindow(QMainWindow):
         self.worker.node_status.connect(self._on_node_status)
         self.worker.node_progress.connect(self._on_node_progress)
         self.worker.node_done.connect(self._on_node_done)
+        self.worker.node_chunks.connect(self.live_plot.add_chunks)
         self.worker.run_finished.connect(self._on_run_finished)
+        self.live_plot.reset(params, assignments)
+        self.tabs.setCurrentWidget(self.live_plot)
         self._set_params_enabled(False)
         self.start_btn.setEnabled(False)
         self.stop_btn.setEnabled(True)
@@ -578,6 +588,7 @@ class MasterWindow(QMainWindow):
             self.log("⚠ Запуск записан со статусом recovered и не попадёт на графики серии")
 
         self._fill_summary(params, assignments, total_time, status)
+        self.live_plot.finish(integral, status)
 
         # Удалить из таблицы узлы, отключившиеся во время расчёта
         for node_id in self._gone:
