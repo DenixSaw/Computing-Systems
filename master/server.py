@@ -304,6 +304,7 @@ class RunWorker(QThread):
     node_status = pyqtSignal(int, str)             # node_id, статус
     node_progress = pyqtSignal(int, float)         # node_id, 0..1
     node_done = pyqtSignal(int, float, float)      # node_id, частичная сумма, время узла
+    node_chunks = pyqtSignal(int, list)            # кто посчитал, [[start, профиль, вклад], …]
     run_finished = pyqtSignal(dict)                # итог расчёта
 
     def __init__(self, server: MasterServer, pool: ComputePool, params: TaskParams,
@@ -335,7 +336,10 @@ class RunWorker(QThread):
                 partial, elapsed = self.pool.compute(
                     self.params, a.start, a.end,
                     progress_cb=lambda f, nid=a.node_id: self.node_progress.emit(nid, f),
-                    cancel_event=self._cancel)
+                    cancel_event=self._cancel,
+                    # слои, посчитанные master (в т.ч. при пересчёте), красятся цветом master
+                    chunk_cb=lambda s, prof, part: self.node_chunks.emit(
+                        MASTER_NODE_ID, [[s, prof, part]]))
                 self._events.put(("LOCAL_DONE", a.node_id, {"partial": partial, "time": elapsed}))
             except ComputeCancelled:
                 self._events.put(("LOCAL_CANCELLED", a.node_id, {}))
@@ -393,6 +397,9 @@ class RunWorker(QThread):
                     continue
                 if kind == PROGRESS and data.get("run_tag") == self.run_tag and not a.recovered:
                     self.node_progress.emit(node_id, float(data.get("progress", 0.0)))
+                    chunks = data.get("chunks")
+                    if isinstance(chunks, list) and chunks:
+                        self.node_chunks.emit(node_id, chunks)
                 elif kind == RESULT and data.get("run_tag") == self.run_tag and not a.recovered:
                     if data.get("error"):
                         self._fail_over(a, f"ошибка на узле: {data['error']}", warnings)

@@ -171,6 +171,11 @@ class SlaveClient(QThread):
         self.log.emit(f"Получена задача: функция {params.function}, N={params.n}, "
                       f"слои {start}–{end - 1} ({end - start} шт.), процессов: {self.pool.processes}")
         last_sent = 0.0
+        # Готовые порции (первый слой, профиль ∬f dy dz, вклад) для живого графика master
+        pending_chunks: list[list] = []
+
+        def on_chunk(s: int, profile: list[float], part: float) -> None:
+            pending_chunks.append([s, profile, part])
 
         def on_progress(frac: float) -> None:
             nonlocal last_sent
@@ -178,10 +183,13 @@ class SlaveClient(QThread):
             now = time.monotonic()
             if now - last_sent >= PROGRESS_MIN_INTERVAL or frac >= 1.0:
                 last_sent = now
-                self._send({"type": PROGRESS, "run_tag": run_tag, "progress": frac})
+                self._send({"type": PROGRESS, "run_tag": run_tag, "progress": frac,
+                            "chunks": pending_chunks[:]})
+                pending_chunks.clear()
 
         try:
-            partial, elapsed = self.pool.compute(params, start, end, on_progress, cancel)
+            partial, elapsed = self.pool.compute(params, start, end, on_progress, cancel,
+                                                 chunk_cb=on_chunk)
         except ComputeCancelled:
             self.log.emit("Задача отменена")
             self.task_finished.emit("cancelled", 0.0, 0.0)
